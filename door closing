@@ -1,0 +1,86 @@
+#include <Servo.h>
+
+Servo doorServo;
+
+int servoPin = 9;
+int ledPin = 13;
+
+int OPEN_ANGLE = 20;
+int CLOSE_ANGLE = 110;
+
+String command = "";
+String lastCommand = "";
+
+int currentAngle = OPEN_ANGLE;
+
+void setup() {
+  Serial.begin(9600);
+
+  doorServo.attach(servoPin);
+  pinMode(ledPin, OUTPUT);
+
+  // Start OPEN
+  doorServo.write(OPEN_ANGLE);
+  digitalWrite(ledPin, LOW);  // LED OFF
+  currentAngle = OPEN_ANGLE;
+}
+
+void loop() {
+
+  while (Serial.available() > 0) {
+
+    char c = Serial.read();
+
+    if (c == '\n') {
+
+      command.trim();
+
+      if (command != lastCommand) {
+
+        if (command == "OPEN") {
+
+          moveServoSmooth(OPEN_ANGLE);
+          digitalWrite(ledPin, LOW);   // LED OFF
+          lastCommand = "OPEN";
+        }
+
+        else if (command == "CLOSE") {
+
+          moveServoSmooth(CLOSE_ANGLE);
+          digitalWrite(ledPin, HIGH);  // LED ON
+          lastCommand = "CLOSE";
+        }
+      }
+
+      command = "";
+    }
+
+    else {
+      command += c;
+
+      if (command.length() > 20) {
+        command = "";
+      }
+    }
+  }
+}
+
+void moveServoSmooth(int targetAngle) {
+
+  if (currentAngle < targetAngle) {
+
+    for (int pos = currentAngle; pos <= targetAngle; pos++) {
+      doorServo.write(pos);
+      delay(10);
+    }
+
+  } else {
+
+    for (int pos = currentAngle; pos >= targetAngle; pos--) {
+      doorServo.write(pos);
+      delay(10);
+    }
+  }
+
+  currentAngle = targetAngle;
+}
