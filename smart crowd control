@@ -1,0 +1,167 @@
+import cv2
+import time
+import winsound
+import math
+from ultralytics import YOLO
+import serial
+
+# ==============================
+# CONFIGURATION (MESS HALL)
+# ==============================
+MODEL_PATH = "yolov8m.pt"
+CAMERA_INDEX = 1
+
+MAX_CAPACITY = 2
+
+CONFIDENCE = 0.15              # improved detection
+HEAD_RATIO = 0.18              # better head estimation
+MIN_PERSON_AREA = 800          # allow distant people
+HEAD_MERGE_DISTANCE = 20       # reduce merging
+
+ALARM_FREQ = 1200
+ALARM_DURATION = 1000
+ALARM_INTERVAL = 3
+
+HISTORY_SIZE = 5               # smoothing window
+
+# ==============================
+# INITIALIZATION
+# ==============================
+model = YOLO(MODEL_PATH)
+
+cap = cv2.VideoCapture(CAMERA_INDEX, cv2.CAP_DSHOW)
+cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+
+if not cap.isOpened():
+    print("Camera not accessible")
+    exit()
+
+# ==============================
+# SERIAL (ARDUINO)
+# ==============================
+arduino = serial.Serial('COM5', 9600, timeout=1)  # change COM port
+time.sleep(2)
+
+door_state = "OPEN"
+
+# ==============================
+# VARIABLES
+# ==============================
+last_alarm_time = 0
+count_history = []
+
+# ==============================
+# MAIN LOOP
+# ==============================
+while True:
+    ret, frame = cap.read()
+    if not ret:
+        break
+
+    head_points = []
+    current_time = time.time()
+
+    # ------------------------------
+    # PERSON DETECTION
+    # ------------------------------
+    results = model(frame, conf=CONFIDENCE)
+
+    if results[0].boxes is not None:
+        boxes = results[0].boxes
+
+        for i in range(len(boxes)):
+            if int(boxes.cls[i]) != 0:
+                continue
+
+            x1, y1, x2, y2 = map(int, boxes.xyxy[i])
+            area = (x2 - x1) * (y2 - y1)
+
+            if area < MIN_PERSON_AREA:
+                continue
+
+            # ------------------------------
+            # IMPROVED HEAD ESTIMATION
+            # ------------------------------
+            hx = int(x1 + 0.5 * (x2 - x1))
+            hy = int(y1 + (y2 - y1) * HEAD_RATIO)
+
+            head_points.append((hx, hy))
+
+    # ------------------------------
+    # CLUSTER HEAD POINTS (DEDUP)
+    # ------------------------------
+    unique_heads = []
+
+    for hx, hy in head_points:
+        keep = True
+        for ux, uy in unique_heads:
+            if math.hypot(hx - ux, hy - uy) < HEAD_MERGE_DISTANCE:
+                keep = False
+                break
+        if keep:
+            unique_heads.append((hx, hy))
+
+    # ------------------------------
+    # TEMPORAL SMOOTHING
+    # ------------------------------
+    current_count = len(unique_heads)
+
+    count_history.append(current_count)
+    if len(count_history) > HISTORY_SIZE:
+        count_history.pop(0)
+
+    people_count = int(sum(count_history) / len(count_history))
+
+    # ------------------------------
+    # ALARM + DOOR CONTROL
+    # ------------------------------
+    if people_count >= MAX_CAPACITY:
+        status_text = "OVER CROWDED!"
+        status_color = (0, 0, 255)
+
+        # CLOSE DOOR
+        if door_state != "CLOSE":
+            arduino.write(b"CLOSE\n")
+            door_state = "CLOSE"
+
+        if current_time - last_alarm_time >= ALARM_INTERVAL:
+            winsound.Beep(ALARM_FREQ, ALARM_DURATION)
+            last_alarm_time = current_time
+
+    else:
+        status_text = "NORMAL"
+        status_color = (0, 255, 0)
+
+        # OPEN DOOR
+        if door_state != "OPEN":
+            arduino.write(b"OPEN\n")
+            door_state = "OPEN"
+
+    # ------------------------------
+    # VISUALIZATION
+    # ------------------------------
+    for hx, hy in unique_heads:
+        cv2.circle(frame, (hx, hy), 6, (0, 255, 0), -1)
+
+    cv2.putText(frame, f"People Count: {people_count}",
+                (20, 40),
+                cv2.FONT_HERSHEY_SIMPLEX, 1,
+                (255, 0, 0), 2)
+
+    cv2.putText(frame, f"Status: {status_text}",
+                (20, 80),
+                cv2.FONT_HERSHEY_SIMPLEX, 1,
+                status_color, 3)
+
+    cv2.imshow("Mess Hall People Counting System", frame)
+
+    if cv2.waitKey(1) & 0xFF == ord('q'):
+        break
+
+# ==============================
+# CLEANUP
+# ==============================
+cap.release()
+cv2.destroyAllWindows()
+arduino.close()
